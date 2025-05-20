@@ -104,9 +104,9 @@ def main():
     authors = ["Корф","Сухово-Кобылин", "Литке"]
     tasks = ["Прямые рамки", "Повёрнутые рамки", "Прямые рамки с маской"]
     model_names = {author: {task: None for task in tasks} for author in authors}
-    model_names["Корф"]["Повёрнутые рамки"] = "src/models/korf-obb.pt"
-    model_names["Сухово-Кобылин"]["Прямые рамки"] = "src/models/skob.pt"
-    model_names["Сухово-Кобылин"]["Повёрнутые рамки"] = "src/models/skob-obb.pt"
+    model_names["Корф"]["Повёрнутые рамки"] = "models/korf-obb.pt"
+    model_names["Сухово-Кобылин"]["Прямые рамки"] = "models/skob.pt"
+    model_names["Сухово-Кобылин"]["Повёрнутые рамки"] = "models/skob-obb.pt"
     
     st.markdown("## Распознавание рукописного текста")
     st.sidebar.title("Параметры")
