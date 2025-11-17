@@ -1,0 +1,8 @@
+src/models/litke.pt filter=lfs diff=lfs merge=lfs -text
+src/models/skob.pt filter=lfs diff=lfs merge=lfs -text
+src/models/skob-obb.pt filter=lfs diff=lfs merge=lfs -text
+src/models/korf.pt filter=lfs diff=lfs merge=lfs -text
+src/models/korf-obb.pt filter=lfs diff=lfs merge=lfs -text
+src/models/korf-seg.pt filter=lfs diff=lfs merge=lfs -text
+*.pt filter=lfs diff=lfs merge=lfs -text
+*.jpg filter=lfs diff=lfs merge=lfs -text
