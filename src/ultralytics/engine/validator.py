@@ -173,7 +173,7 @@ class BaseValidator:
         self.jdict = []  # empty before each val
         
         self.cer = []
-        self.wer = []
+        self.wer = []      
         
         for batch_i, batch in enumerate(bar):
             self.run_callbacks("on_val_batch_start")
@@ -181,9 +181,9 @@ class BaseValidator:
             # Preprocess
             with dt[0]:
                 batch = self.preprocess(batch)
-
+                
             # Inference
-            with dt[1]:               
+            with dt[1]:
                 preds = model(batch["img"], augment=augment)
 
             # Loss
@@ -193,7 +193,6 @@ class BaseValidator:
                     
             # Postprocess
             with dt[3]:
-                
                 if self.args.save_preds:
                     h,w = batch['resized_shape'][0]
                     task = self.args.task if hasattr(self.args,'task') else self.model.model.task
@@ -211,12 +210,16 @@ class BaseValidator:
                         true_bboxes = batch['bboxes'] * torch.tensor([w,h,w,h]).to(self.device)
                         true_bboxes = xywh2xyxy(true_bboxes)
                         
-                        true_coefs, true_proto = true_segmentation(true_bboxes, batch['masks'], batch['batch_idx'], preds[1][-1].shape[1])
+                        true_masks = torch.zeros((true_bboxes.shape[:1] + batch['masks'].shape[1:]))
+                        for i in range(batch['bboxes'].shape[0]):
+                            start = (batch['batch_idx'] < batch['batch_idx'][i]).sum().to(torch.int)
+                            true_masks[i] = batch['masks'][batch['batch_idx'][i].to(torch.int)] == i-start+1 
+                        true_masks = [true_masks.to(self.device)[batch['batch_idx'] == i] for i in range(batch['img'].shape[0])]
                         
-                        true_bboxes = torch.hstack([true_bboxes,torch.ones_like(true_bboxes[:,:1]),torch.zeros_like(true_bboxes[:,:1]),\
-                                                    true_coefs])
-                        true_bboxes = (true_bboxes, batch['batch_idx'], true_proto)
-                            
+                        true_bboxes = torch.hstack([true_bboxes,torch.ones_like(true_bboxes[:,:1]),torch.zeros_like(true_bboxes[:,:1])])
+                        true_bboxes = [true_bboxes[batch['batch_idx'] == i] for i in range(len(true_masks))]
+                        true_bboxes = (true_bboxes, true_masks)
+                        
                 else:
                     true_bboxes = None
                 
@@ -225,7 +228,7 @@ class BaseValidator:
                 if self.args.save_preds:
                     self.last_preds = {'im_file': batch['im_file'], 'char_probs': char_probs, \
                                        'bboxes': true_bboxes, 'lines': batch['lines'], 'shape': batch['resized_shape']}
-            
+                    
             self.update_metrics(preds, pred_enc, batch)
             
             if self.args.plots and batch_i < 3:
@@ -233,11 +236,13 @@ class BaseValidator:
                 self.plot_predictions(batch, preds, batch_i)
 
             self.run_callbacks("on_val_batch_end")
-            
+        
         stats = self.get_stats()
         self.check_stats(stats)
         self.speed = dict(zip(self.speed.keys(), (x.t / len(self.dataloader.dataset) * 1e3 for x in dt)))
         self.finalize_metrics()
+        self.metrics.cer = np.mean(self.cer)
+        self.metrics.wer = np.mean(self.wer)
         
         self.print_results()
         self.run_callbacks("on_val_end")
@@ -258,7 +263,8 @@ class BaseValidator:
                     json.dump(self.jdict, f)  # flatten and save
                 stats = self.eval_json(stats)  # update stats
             if self.args.plots or self.args.save_json:
-                LOGGER.info(f"Results saved to {colorstr('bold', self.save_dir)}")
+                LOGGER.info(f"Results saved to {colorstr('bold', self.save_dir)}")            
+                
             return stats
 
     def match_predictions(self, pred_classes, true_classes, iou, use_scipy=False):
