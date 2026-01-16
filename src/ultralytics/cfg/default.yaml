@@ -41,6 +41,8 @@ mask_ratio: 4 # (int) mask downsample ratio (segment train only)
 # Classification
 dropout: 0.0 # (float) use dropout regularization (classify train only)
 true_boxes: False # (bool) use ground truth boxes for calculation of ctc loss
+cut_lines: True # (bool) cut text lines that go beyond the frame (true) or don't calculate their ctc at all (false)
+boxless: False # (bool) use task-aligned assigner regarding similarity of text lines, not boxes
 
 # Val/Test settings ----------------------------------------------------------------------------------------------------
 val: True # (bool) validate/test during training
@@ -54,6 +56,7 @@ half: False # (bool) use half precision (FP16)
 dnn: False # (bool) use OpenCV DNN for ONNX inference
 plots: True # (bool) save plots and images during train/val
 save_preds: False # save predictions during training for subsequent analysis
+use_style: True # use style like underline or strikethrough for CER and WER calculation
 
 # Predict settings -----------------------------------------------------------------------------------------------------
 source: # (str, optional) source directory for images or videos
@@ -65,7 +68,6 @@ agnostic_nms: False # (bool) class-agnostic NMS
 classes: # (int | list[int], optional) filter results by class, i.e. classes=0, or classes=[0,2,3]
 retina_masks: False # (bool) use high-resolution segmentation masks
 embed: # (list[int], optional) return feature vectors/embeddings from given layers
-latin_only: False # (bool) Use only Latin characters in the transcript
 
 # Visualize settings ---------------------------------------------------------------------------------------------------
 show: False # (bool) show predicted images and videos if environment allows
