@@ -238,6 +238,7 @@ class BaseTrainer:
 
         # Model
         self.run_callbacks("on_pretrain_routine_start")
+        
         ckpt = self.setup_model()
         self.model = self.model.to(self.device)
         self.set_model_attributes()
@@ -297,8 +298,10 @@ class BaseTrainer:
             
             self.model.charset = self.train_loader.dataset.charset
             self.model.wc = self.train_loader.dataset.data['wc']
+            self.model.ng = self.train_loader.dataset.data['ng']
             self.test_loader.dataset.charset = self.train_loader.dataset.charset
             self.test_loader.dataset.data['wc'] = self.train_loader.dataset.data['wc']
+            self.test_loader.dataset.data['ng'] = self.train_loader.dataset.data['ng']
             
             self.validator = self.get_validator()
             metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
@@ -321,6 +324,7 @@ class BaseTrainer:
         )
         # Scheduler
         self._setup_scheduler()
+        
         self.stopper, self.stop = EarlyStopping(patience=self.args.patience), False
         self.resume_training(ckpt)
         self.scheduler.last_epoch = self.start_epoch - 1  # do not move
@@ -533,6 +537,7 @@ class BaseTrainer:
             cfg = ckpt["model"].yaml
         else:
             cfg = model
+            
         self.model = self.get_model(cfg=cfg, weights=weights, verbose=RANK == -1)  # calls Model(cfg, weights)
         return ckpt
 
