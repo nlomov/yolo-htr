@@ -59,7 +59,7 @@ class OBBValidator(DetectionValidator):
                                            torch.zeros_like(boxes[mask,:1]), boxes[mask,4:5]]))
         else:
             predn = predn0
-        
+            
         try:
             chars = sorted(self.model.model.charset)
         except:
@@ -70,10 +70,11 @@ class OBBValidator(DetectionValidator):
             probs = scores_by_obb(predn[i][:,:4] / 8, predn[i][:,6], preds[1][0][-1][i])
             try:
                 dtype = self.model.model.model[-1].end_conv.weight.dtype
-                probs = self.model.model.model[-1](probs.to(dtype))
+                probs = self.model.model.model[-1](probs.to(dtype), groups=self.model.model.ng)
             except:
                 dtype = self.model.model[-1].end_conv.weight.dtype
-                probs = self.model.model[-1](probs.to(dtype))
+                probs = self.model.model[-1](probs.to(dtype), groups=self.model.ng)
+            
             lines = decode_probs(probs, chars)
             pred_enc.append(lines)
             char_probs.append(probs)
