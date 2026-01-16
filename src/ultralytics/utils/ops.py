@@ -113,7 +113,7 @@ def scale_boxes(img1_shape, boxes, img0_shape, ratio_pad=None, padding=True, xyw
     else:
         gain = ratio_pad[0][0]
         pad = ratio_pad[1]
-
+    
     if padding:
         boxes[..., 0] -= pad[0]  # x padding
         boxes[..., 1] -= pad[1]  # y padding
@@ -538,7 +538,20 @@ def xyxyxyxy2xywhr(corners):
     points = corners.cpu().numpy() if is_torch else corners
     points = points.reshape(len(corners), -1, 2)
     rboxes = []
-    for pts in points:
+    for temp in points:
+        pts = np.unique(temp,axis=0)
+        if pts.shape[0] == 3:
+            if np.all(pts[0] != pts[1]):
+                i,j,k = 0,1,2
+            elif np.all(pts[0] != pts[2]):
+                i,j,k = 0,2,1
+            else:
+                i,j,k = 1,2,0
+            v = pts[j] - pts[i]
+            v = np.array([v[1], -v[0]]) / np.linalg.norm(v)
+            a = pts[i] + v * np.dot(v, pts[k]-pts[i])
+            b = pts[j] + v * np.dot(v, pts[k]-pts[j])
+            pts = np.vstack([pts,a,b])
         # NOTE: Use cv2.minAreaRect to get accurate xywhr,
         # especially some objects are cut off by augmentations in dataloader.
         (x, y), (w, h), angle = cv2.minAreaRect(pts)
@@ -624,8 +637,14 @@ def resample_segments(segments, n=1000):
     """
     for i, s in enumerate(segments):
         s = np.concatenate((s, s[0:1, :]), axis=0)
-        x = np.linspace(0, len(s) - 1, n)
-        xp = np.arange(len(s))
+        
+        x = np.linspace(0, 1, n+1)
+        x += x[1]/2
+        x = x[:-1]
+        
+        xp = np.hstack([[0], np.cumsum(np.sqrt(((s[1:]-s[:-1])**2).sum(axis=1)))])
+        xp /= xp[-1]
+        
         segments[i] = (
             np.concatenate([np.interp(x, xp, s[:, i]) for i in range(2)], dtype=np.float32).reshape(2, -1).T
         )  # segment xy
@@ -718,12 +737,49 @@ def process_mask(protos, stride, bboxes, shape, upsample=False):
     downsampled_bboxes[:, 3] *= height_ratio
     downsampled_bboxes[:, 1] *= height_ratio
     
-    masks *= (masks == masks.amax(axis=0))
-    masks = crop_mask(masks, downsampled_bboxes)  # CHW
+    if masks.shape[0] > 0:
+        masks *= (masks == masks.amax(axis=0))
+        masks = crop_mask(masks, downsampled_bboxes)  # CHW
     
     if upsample:
         masks = F.interpolate(masks[None], shape, mode="bilinear", align_corners=False)[0]  # CHW
     return masks.gt_(0.5)
+
+
+def process_mask_old(protos, masks_in, bboxes, shape, upsample: bool = False):
+    """
+    Apply masks to bounding boxes using mask head output.
+
+    Args:
+        protos (torch.Tensor): Mask prototypes with shape (mask_dim, mask_h, mask_w).
+        masks_in (torch.Tensor): Mask coefficients with shape (N, mask_dim) where N is number of masks after NMS.
+        bboxes (torch.Tensor): Bounding boxes with shape (N, 4) where N is number of masks after NMS.
+        shape (tuple): Input image size as (height, width).
+        upsample (bool): Whether to upsample masks to original image size.
+
+    Returns:
+        (torch.Tensor): A binary mask tensor of shape [n, h, w], where n is the number of masks after NMS, and h and w
+            are the height and width of the input image. The mask is applied to the bounding boxes.
+    """
+    c, mh, mw = protos.shape  # CHW
+    ih, iw = shape
+    
+    protos = torch.tensor(np.load('prototypes.npy')).to('cuda')
+    
+    masks = (masks_in @ protos.float().view(c, -1)).view(-1, mh, mw)  # CHW
+    width_ratio = mw / iw
+    height_ratio = mh / ih
+
+    downsampled_bboxes = bboxes.clone()
+    downsampled_bboxes[:, 0] *= width_ratio
+    downsampled_bboxes[:, 2] *= width_ratio
+    downsampled_bboxes[:, 3] *= height_ratio
+    downsampled_bboxes[:, 1] *= height_ratio
+
+    masks = crop_mask(masks, downsampled_bboxes)  # CHW
+    if upsample:
+        masks = F.interpolate(masks[None], shape, mode="bilinear", align_corners=False)[0]  # CHW
+    return masks.gt_(0.0)
 
 
 def process_mask_native(protos, masks_in, bboxes, shape):
@@ -816,12 +872,10 @@ def regularize_rboxes(rboxes):
         (torch.Tensor): The regularized boxes.
     """
     x, y, w, h, t = rboxes.unbind(dim=-1)
-    
-    # Swap edge and angle if abs(t) > pi/4
-    w_ = torch.where(abs(t) <= math.pi/4, w, h)
-    h_ = torch.where(abs(t) <= math.pi/4, h, w)
-    t = torch.where(abs(t) <= math.pi/4, t, (t + math.pi/4) % math.pi/2 - math.pi/4)
-    
+    # Swap edge and angle if h >= w
+    w_ = torch.where(w > h, w, h)
+    h_ = torch.where(w > h, h, w)
+    t = torch.where(w > h, t, t + math.pi / 2) % math.pi
     return torch.stack([x, y, w_, h_, t], dim=-1)  # regularized boxes
 
 
@@ -916,7 +970,7 @@ def decode_probs(char_probs, chars):
     for prob in char_probs:
         lab = prob.max(axis=-1).indices.detach().cpu().numpy()                
         lab = [l[0] for l in zip(lab,np.hstack((lab[1:],[-1]))) if l[0] != l[1] and l[0] != char_probs.shape[-1]-1]
-        lines.append("".join(chars[l] for l in lab))        
+        lines.append("".join(chars[l] if l < len(chars) else ' ' for l in lab))
     return lines
 
 
@@ -967,6 +1021,42 @@ def scores_by_obb(pred_cells, pred_angles, feats):
     
     return probs
 
+def scores_by_mask_old(pred_cells, pred_masks, proto, feats):
+    device = feats.device
+        
+    pred_cells = 2*pred_cells
+    X = torch.arange(proto.shape[-1]).to(device)
+    Y = torch.arange(proto.shape[-2]).to(device)
+    
+    dl = (pred_cells[:, 0:1] - X).clip(0,1)
+    dr = (X+1 - pred_cells[:, 2:3]).clip(0,1)
+    dt = (pred_cells[:, 1:2] - Y).clip(0,1)
+    db = (Y+1 - pred_cells[:, 3:4]).clip(0,1)
+
+    hmask = (1 - dl - dr)
+    vmask = (1 - dt - db)
+    
+    pred_mask = torch.einsum('in,nhw->ihw',pred_masks,proto).sigmoid()
+    pred_mask *= vmask[...,None]
+    
+    Yt = (pred_mask * (3+Y[...,None])).sum(axis=1) / pred_mask.sum(axis=1).clip(1) - 3
+    
+    dt = (Yt.unsqueeze(1) - (Y[...,None]+1.5)).clip(0,1)
+    db = ((Y[...,None]-1.5) - Yt.unsqueeze(1)).clip(0,1)
+    pred_mask = (1 - dt - db)
+    
+    pred_mask *= hmask.unsqueeze(1)
+    sy,sx = pred_mask.shape[1]//feats.shape[1], pred_mask.shape[2]//feats.shape[2] 
+    if pred_mask.numel() == 0:
+        pred_mask = pred_mask[:,:feats.shape[1],:feats.shape[2]]
+    else:
+        pred_mask = torch.nn.AvgPool2d((sy,sx),(sy,sx))(pred_mask) 
+    #pred_mask = F.interpolate(pred_mask[None], feats.shape[-2:], mode="bilinear")[0]
+    
+    probs = torch.einsum('ihw,nhw->iwn', pred_mask, feats)
+    
+    return probs
+
 def scores_by_mask(pred_cells, pred_mask, feats):
     device = feats.device
         
@@ -1010,7 +1100,6 @@ def true_segmentation(true_bboxes, batch_masks, batch_idx, num_proto):
 
     for i in range(batch_masks.shape[0]):
         nobj = int(batch_masks[i].max())
-        A = np.zeros((nobj, nobj), dtype='bool')
         curr = batch_idx == i
         iou = box_iou(true_bboxes[curr], true_bboxes[curr]) > 0
         idxs = [[] for _ in range(true_proto.shape[1])]
