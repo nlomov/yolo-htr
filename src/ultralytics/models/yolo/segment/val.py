@@ -12,7 +12,7 @@ from ultralytics.utils import LOGGER, NUM_THREADS, ops
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.metrics import SegmentMetrics, box_iou, mask_iou, get_cer_and_wer
 from ultralytics.utils.plotting import output_to_target, plot_images
-from ultralytics.utils.ops import scores_by_mask, decode_probs, format_string_for_wer
+from ultralytics.utils.ops import scores_by_mask, decode_probs, format_string_for_wer, process_mask, process_mask_old
 import itertools
 from editdistance import distance as editdistance
 from scipy.optimize import linear_sum_assignment
@@ -75,7 +75,7 @@ class SegmentationValidator(DetectionValidator):
             "WER",
         )
 
-    def postprocess(self, preds, true_bboxes=None):
+    def postprocess(self, preds, true_bboxes=None):        
         """Post-processes YOLO predictions and returns output detections with proto."""
         p0 = ops.non_max_suppression(
              preds[0],
@@ -88,31 +88,52 @@ class SegmentationValidator(DetectionValidator):
              nc=self.nc,
         )
         
-        proto0 = preds[1][-1] if len(preds[1]) == 3 else preds[1]  # second output is len 3 if pt, but only 1 if exported
+        old = False
+        try:
+            if type(self.model.model.model[-3]).__name__ == 'SegmentOld':
+                old = True
+        except:
+            pass
+        try:
+            if type(self.model.model[-3]).__name__ == 'SegmentOld':
+                old = True
+        except:
+            pass
+        proto0 = preds[1][-1] if len(preds[1]) == (3 if old else 2) else preds[1]  # second output is len 3 if pt, but only 1 if exported
         
-        if true_bboxes is not None:
-            boxes, idx, proto = true_bboxes
-            p = []
-            for i in range(len(p0)):
-                p.append(boxes[idx == i])
-        else:
-            p, proto = p0, proto0
-                
         try:
             chars = sorted(self.model.model.charset)
+            stride = self.model.model.stride[-1]
+            ng = self.model.model.ng
         except:
             chars = sorted(self.model.charset)
+            stride = self.model.stride[-1]
+            ng = self.model.ng
+        
+        if true_bboxes is not None:
+            p, pred_masks = true_bboxes
+        else:
+            p = p0
+            if old:
+                pred_masks = [process_mask_old(proto0[i], p0[i][:,6:], p0[i][:,:4], (4*proto0.shape[-2], 4*proto0.shape[-1])) \
+                              for i in range(len(p))]
+            else:
+                pred_masks = [process_mask(proto0[i], stride, p0[i][:,:4], (4*proto0.shape[-2], 4*proto0.shape[-1])) for i in range(len(p))]
+            
         pred_enc = []
         
         for i in range(len(p)):
-            char_probs = scores_by_mask(p[i][:,:4] / 8, p[i][:,6:], proto[i], preds[1][0][-1][i])
             try:
+                char_probs = scores_by_mask(p[i][:,:4] / self.model.model.stride[0], pred_masks[i], preds[1][0][-1][i])
                 dtype = self.model.model.model[-1].end_conv.weight.dtype
-                char_probs = self.model.model.model[-1](char_probs.to(dtype))
+                char_probs = self.model.model.model[-1](char_probs.to(dtype), groups=self.model.model.ng)
             except:
+                char_probs = scores_by_mask(p[i][:,:4] / self.model.stride[0], pred_masks[i], preds[1][0][-1][i])
                 dtype = self.model.model[-1].end_conv.weight.dtype
-                char_probs = self.model.model[-1](char_probs.to(dtype))
+                char_probs = self.model.model[-1](char_probs.to(dtype), groups=self.model.ng)
+                
             lines = decode_probs(char_probs, chars)
+            
             pred_enc.append(lines)
             
         return (p0, proto0), pred_enc, char_probs
@@ -127,7 +148,26 @@ class SegmentationValidator(DetectionValidator):
     def _prepare_pred(self, pred, pbatch, proto):
         """Prepares a batch for training or inference by processing images and targets."""
         predn = super()._prepare_pred(pred, pbatch)
-        pred_masks = self.process(proto, pred[:, 6:], pred[:, :4], shape=pbatch["imgsz"])
+        try:
+            stride = self.model.model.stride[-1]
+        except:
+            stride = self.model.stride[-1]
+        old = False
+        try:
+            if type(self.model.model.model[-3]).__name__ == 'SegmentOld':
+                old = True
+        except:
+            pass
+        try:
+            if type(self.model.model[-3]).__name__ == 'SegmentOld':
+                old = True
+        except:
+            pass
+        
+        if old:
+            pred_masks = process_mask_old(proto, pred[:, 6:], pred[:, :4], shape=pbatch["imgsz"])
+        else:            
+            pred_masks = process_mask(proto, stride, pred[:, :4], shape=pbatch["imgsz"])
         return predn, pred_masks
 
     def update_metrics(self, preds, pred_enc, batch):
@@ -158,6 +198,7 @@ class SegmentationValidator(DetectionValidator):
             # Predictions
             if self.args.single_cls:
                 pred[:, 5] = 0
+                        
             predn, pred_masks = self._prepare_pred(pred, pbatch, proto)
             stat["conf"] = predn[:, 4]
             stat["pred_cls"] = predn[:, 5]
@@ -171,6 +212,7 @@ class SegmentationValidator(DetectionValidator):
                 
                 if self.args.ctc > 0:
                     true_lines = [batch["lines"][i] for i,idx in enumerate(batch['batch_idx']) if idx == si]
+                    
                     if not self.args.save_preds:
                         conf_thr = 0.5
                         iou_thr = 0.5
@@ -191,15 +233,18 @@ class SegmentationValidator(DetectionValidator):
                     else:
                         pred_lines = pred_enc[si]
                         true_idx, pred_idx = np.arange(len(true_lines)), np.arange(len(true_lines))
-                            
+                    
+                    if not self.args.use_style:
+                        true_lines = [''.join(chr(ord(t) % 10000) for t in l) for l in true_lines]
+                        pred_lines = [''.join(chr(ord(t) % 10000) for t in l) for l in pred_lines]
+                    
                     cer, wer, clen, wlen = 0, 0, 0, 0
                     
                     for i,j in zip(true_idx, pred_idx):
                         pred_chars, true_chars = pred_lines[j], true_lines[i]
                         pred_words = [w for w in format_string_for_wer(pred_chars).split(' ') if len(w) > 0]
                         true_words = [w for w in format_string_for_wer(true_chars).split(' ') if len(w) > 0]
-                        clen += len(true_chars)
-                        wlen += len(true_words)
+                        
                         if self.data['wc'] in true_chars:    
                             #cer += editdistance_chars(pred_chars, true_chars)
                             #wer += editdistance_words(pred_words, true_words)
@@ -207,6 +252,8 @@ class SegmentationValidator(DetectionValidator):
                         else:
                             cer += editdistance(pred_chars, true_chars)
                             wer += editdistance(pred_words, true_words)
+                            clen += len(true_chars)
+                            wlen += len(true_words)
                     '''
                     for i in range(cost_matrix.shape[0]):
                         if i not in labels_idx:
@@ -217,9 +264,9 @@ class SegmentationValidator(DetectionValidator):
                             clen += len(true_chars)
                             wlen += len(true_words)
                     '''
-                    
-                    self.cer.append(cer/max(clen,1))
-                    self.wer.append(wer/max(wlen,1))
+                    if clen > 0:
+                        self.cer.append(cer/max(clen,1))
+                        self.wer.append(wer/max(wlen,1))
                 else:
                     self.cer.append(1.0)
                     self.wer.append(1.0)
