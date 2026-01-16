@@ -117,10 +117,10 @@ class DetectionValidator(BaseValidator):
             probs = scores_by_box(pred_bboxes[i][:,:4] / 8, preds[1][-1][i])
             try:
                 dtype = self.model.model.model[-1].end_conv.weight.dtype
-                probs = self.model.model.model[-1](probs.to(dtype))
+                probs = self.model.model.model[-1](probs.to(dtype), groups=self.model.model.ng)
             except:
                 dtype = self.model.model[-1].end_conv.weight.dtype
-                probs = self.model.model[-1](probs.to(dtype))
+                probs = self.model.model[-1](probs.to(dtype), groups=self.model.ng)
             lines = decode_probs(probs, chars)
             pred_enc.append(lines)
             char_probs.append(probs)
@@ -150,7 +150,7 @@ class DetectionValidator(BaseValidator):
         return predn
     
     def update_metrics(self, preds, pred_enc, batch):
-        """Metrics."""         
+        """Metrics."""
         for si, pred in enumerate(preds):
             self.seen += 1
             npr = len(pred)
@@ -208,15 +208,17 @@ class DetectionValidator(BaseValidator):
                     else:
                         pred_lines = pred_enc[si]
                         true_idx, pred_idx = np.arange(len(true_lines)), np.arange(len(true_lines))
-                        
+                    
+                    if not self.args.use_style:
+                        true_lines = [''.join(chr(ord(t) // 10000) for t in l) for l in true_lines]
+                        pred_lines = [''.join(chr(ord(t) // 10000) for t in l) for l in pred_lines]
+                    
                     cer, wer, clen, wlen = 0, 0, 0, 0
                     
                     for i,j in zip(true_idx, pred_idx):
                         pred_chars, true_chars = pred_lines[j], true_lines[i]
                         pred_words = [w for w in format_string_for_wer(pred_chars).split(' ') if len(w) > 0]
                         true_words = [w for w in format_string_for_wer(true_chars).split(' ') if len(w) > 0]
-                        clen += len(true_chars)
-                        wlen += len(true_words)
                         
                         if self.data['wc'] in true_chars:    
                             #cer += editdistance_chars(pred_chars, true_chars)
@@ -225,6 +227,8 @@ class DetectionValidator(BaseValidator):
                         else:
                             cer += editdistance(pred_chars, true_chars)
                             wer += editdistance(pred_words, true_words)
+                            clen += len(true_chars)
+                            wlen += len(true_words)
                             
                     '''
                     for i in range(cost_matrix.shape[0]):
@@ -237,14 +241,16 @@ class DetectionValidator(BaseValidator):
                             wlen += len(true_words)
                     '''
                     
-                    self.cer.append(cer/max(clen,1))
-                    self.wer.append(wer/max(wlen,1))
+                    if clen > 0:
+                        self.cer.append(cer/max(clen,1))
+                        self.wer.append(wer/max(wlen,1))
                 else:
                     self.cer.append(1.0)
                     self.wer.append(1.0)
                 
                 if self.args.plots:
                     self.confusion_matrix.process_batch(predn, bbox, cls)   
+            
             for k in self.stats.keys():
                 self.stats[k].append(stat[k])
                 
@@ -273,7 +279,6 @@ class DetectionValidator(BaseValidator):
     def print_results(self):
         """Prints training/validation set metrics per class."""
         pf = "%22s" + "%11i" * 2 + "%11.4g" * (len(self.metrics.keys) + 2)  # print format
-        
         LOGGER.info(pf % ("all", self.seen, self.nt_per_class.sum(), *self.metrics.mean_results(), np.mean(self.cer), np.mean(self.wer)))
         if self.nt_per_class.sum() == 0:
             LOGGER.warning(f"WARNING ⚠️ no labels found in {self.args.task} set, can not compute metrics without labels")
