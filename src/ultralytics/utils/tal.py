@@ -341,6 +341,17 @@ def bbox2dist(anchor_points, bbox, reg_max):
     x1y1, x2y2 = bbox.chunk(2, -1)
     return torch.cat((anchor_points - x1y1, x2y2 - anchor_points), -1).clamp_(0, reg_max - 0.01)  # dist (lt, rb)
 
+def rbox2dist(anchor_points, bbox, reg_max):
+    """Transform rbox(xywhr) to dist(ltrb)."""
+    c_xy, wh = bbox[...,:4].chunk(2, -1)
+    pred_angle = bbox[...,4:5]
+    cos, sin = torch.cos(pred_angle), torch.sin(pred_angle)
+    x, y = (c_xy - anchor_points).split(1, -1)
+    f = torch.cat([x * cos + y * sin, -x * sin + y * cos], dim=-1)
+    lt = wh/2 - f
+    rb = wh/2 + f
+    return torch.cat([lt, rb], -1).clamp_(0, reg_max - 0.01)  # dist (lt, rb)
+
 
 def dist2rbox(pred_dist, pred_angle, anchor_points, dim=-1):
     """
