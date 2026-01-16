@@ -1326,10 +1326,7 @@ class v8OBBLoss(v8DetectionLoss):
         loss = torch.zeros(4, device=self.device)  # box, cls, dfl
         feats, pred_angles = preds if isinstance(preds[0], list) else preds[1]
         batch_size = pred_angles.shape[0]  # batch size, number of masks, mask height, mask width
-        
-        vol = int(batch['im_file'][0].split('/')[-1][0])
-        page = int(''.join(c for c in batch['im_file'][0].split('/')[-1][2:] if c.isdigit()))
-        boxless = self.boxless and vol == 3 and page >= 7 and str(page)[-1] not in '158'
+        boxless = self.boxless
         
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats[:-1]], 2).split(
             (self.reg_max * 4, self.nc), 1
