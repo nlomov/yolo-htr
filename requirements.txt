@@ -2,7 +2,7 @@ altair
 pandas
 streamlit==1.40.0
 numpy==1.25.0
-opencv-python
+opencv-python-headless
 pandas
 streamlit-drawable-canvas==0.8.0
 pillow
